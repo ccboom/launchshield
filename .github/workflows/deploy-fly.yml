@@ -1,0 +1,48 @@
+name: Deploy to Fly.io
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "launchshield/**"
+      - "templates/**"
+      - "static/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "fly.toml"
+      - ".github/workflows/deploy-fly.yml"
+
+concurrency:
+  group: deploy-fly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: fly deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: fly-production
+      url: https://launchshield-swarm.fly.dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        run: flyctl deploy --remote-only --strategy rolling
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Smoke test deployment
+        run: |
+          for i in {1..20}; do
+            if curl -fsS https://launchshield-swarm.fly.dev/api/health >/dev/null; then
+              echo "health ok after $i attempts"; exit 0;
+            fi
+            sleep 5
+          done
+          echo "health check never succeeded" >&2
+          exit 1

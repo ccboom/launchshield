@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: launchshield-swarm
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: singapore
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: launchshield-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LAUNCHSHIELD_DEMO_PACE_SECONDS
+        value: "0.35"
+      - key: LAUNCHSHIELD_DATA_DIR
+        value: /app/data
+      - key: ARC_EXPLORER_BASE_URL
+        value: https://sandbox.explorer.arc.network
+      - key: PRESET_REPO_URL
+        value: https://github.com/launchshield-demo/vulnerable-playground
+      - key: PRESET_TARGET_URL
+        value: https://vulnerable-playground.launchshield.dev
+      # Flip these to true in the Render dashboard once sandbox credentials exist:
+      - key: USE_REAL_PAYMENTS
+        value: "false"
+      - key: USE_REAL_LLM
+        value: "false"
+      - key: USE_REAL_AISA
+        value: "false"
+      - key: USE_REAL_GITHUB
+        value: "false"
+      # Secrets below are intentionally NOT set here — add them through the
+      # Render dashboard so they never land in source control.
+      # - CIRCLE_API_KEY
+      # - ARC_RPC_URL / ARC_WALLET_ADDRESS / ARC_PRIVATE_KEY
+      # - X402_GATEWAY_BASE_URL / X402_GATEWAY_API_KEY
+      # - OPENAI_API_KEY
+      # - AISA_API_KEY / AISA_BASE_URL
+      # - GITHUB_TOKEN

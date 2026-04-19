@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LaunchShield Swarm — AI Security Scan with Real-Time Micropayments</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⛨</span>
+      <span class="brand-name">LaunchShield Swarm</span>
+    </div>
+    <nav class="nav">
+      <a href="https://github.com/" target="_blank" rel="noreferrer">Source</a>
+      <a href="/api/health" target="_blank" rel="noreferrer">Health</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>
+        AI security audits<br/>
+        <span class="accent">settled one tool call at a time.</span>
+      </h1>
+      <p class="lede">
+        LaunchShield Swarm breaks every security audit into dozens of atomic tool calls.
+        Each call is paid on-chain — sub-cent, sandbox-settled, Arc Explorer-verifiable.
+        This business model only works because Circle Nanopayments + Arc turn
+        <span class="accent">high-frequency settlement</span> from a dream into a line item.
+      </p>
+
+      <div class="cta-grid">
+        <button id="cta-preset" class="cta primary" type="button">
+          <span class="cta-label">Execute &amp; Stress Test</span>
+          <span class="cta-sub">{{ preset_total }} paid tool calls · preset target</span>
+        </button>
+        <form id="custom-form" class="custom-form" autocomplete="off">
+          <label>
+            GitHub Repo URL
+            <input type="url" name="repo_url" placeholder="https://github.com/owner/repo" required />
+          </label>
+          <label>
+            Target Site URL
+            <input type="url" name="target_url" placeholder="https://example.com" required />
+          </label>
+          <button class="cta secondary" type="submit">
+            Run Standard Scan
+            <span class="cta-sub">{{ custom_total }} paid tool calls</span>
+          </button>
+        </form>
+      </div>
+
+      <p class="preset-meta">
+        Preset target: <code>{{ preset_repo_url }}</code> → <code>{{ preset_target_url }}</code>
+      </p>
+    </section>
+
+    <section class="panel execution-panel" hidden id="execution-panel">
+      <header>
+        <h2>Execution</h2>
+        <span class="pill" id="run-mode">—</span>
+        <span class="pill subtle" id="run-id">—</span>
+      </header>
+
+      <div class="progress-wrapper">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="progress-meta">
+          <span id="progress-count">0 / 0</span>
+          <span id="progress-stage">idle</span>
+        </div>
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric"><span class="metric-label">Completed</span><span class="metric-value" id="metric-completed">0</span></div>
+        <div class="metric"><span class="metric-label">Confirmed txns</span><span class="metric-value" id="metric-confirmed">0</span></div>
+        <div class="metric critical"><span class="metric-label">Critical</span><span class="metric-value" id="metric-critical">0</span></div>
+        <div class="metric high"><span class="metric-label">High</span><span class="metric-value" id="metric-high">0</span></div>
+        <div class="metric medium"><span class="metric-label">Medium</span><span class="metric-value" id="metric-medium">0</span></div>
+        <div class="metric low"><span class="metric-label">Low</span><span class="metric-value" id="metric-low">0</span></div>
+      </div>
+    </section>
+
+    <section class="panel billing-panel" hidden id="billing-panel">
+      <header>
+        <h2>Streaming Billing</h2>
+        <span class="pill" id="billing-tail">live</span>
+      </header>
+      <ol id="billing-feed" class="billing-feed"></ol>
+    </section>
+
+    <section class="panel findings-panel" hidden id="findings-panel">
+      <header>
+        <h2>Top Findings</h2>
+        <span class="pill" id="findings-count">0</span>
+      </header>
+      <ul id="findings-list" class="findings-list"></ul>
+    </section>
+
+    <section class="panel profit-panel" hidden id="profit-panel">
+      <header>
+        <h2>Profitability Matrix</h2>
+      </header>
+      <div class="profit-grid">
+        <div class="profit-card">
+          <span class="profit-label">Total AI Service Cost</span>
+          <span class="profit-value" id="profit-tool-cost">$0.000</span>
+        </div>
+        <div class="profit-card good">
+          <span class="profit-label">Arc / Circle Settled Cost</span>
+          <span class="profit-value" id="profit-settled">0.000 USDC</span>
+        </div>
+        <div class="profit-card bad">
+          <span class="profit-label">Traditional EVM Gas Estimate</span>
+          <span class="profit-value" id="profit-gas">$0.000</span>
+        </div>
+      </div>
+      <p class="profit-conclusion" id="profit-conclusion">
+        Traditional gas destroys the margin of high-frequency AI security workflows.
+        Arc + Circle micropayments keep the model profitable.
+      </p>
+    </section>
+
+    <section class="panel pricing-panel">
+      <header><h2>Pricing Matrix</h2></header>
+      <ul class="pricing-grid">
+        {% for tool, price in tool_prices.items() %}
+        <li><code>{{ tool }}</code><span>${{ "%.3f"|format(price) }}</span></li>
+        {% endfor %}
+      </ul>
+      <p class="pricing-note">Every tool call settles for <strong>less than $0.01</strong>. Preset stress run fires <strong>{{ preset_total }}</strong> settlements back-to-back.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>LaunchShield Swarm · sandbox demo · Arc + Circle nanopayments</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

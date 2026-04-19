@@ -1,0 +1,51 @@
+# Fly.io configuration for LaunchShield Swarm.
+# Replace `app` with the name you picked when running `fly launch`.
+app = "launchshield-swarm"
+primary_region = "sin"
+kill_signal = "SIGINT"
+kill_timeout = "5s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  APP_ENV = "production"
+  PORT = "8000"
+  LAUNCHSHIELD_DATA_DIR = "/data"
+  LAUNCHSHIELD_DEMO_PACE_SECONDS = "0.35"
+  ARC_EXPLORER_BASE_URL = "https://sandbox.explorer.arc.network"
+  PRESET_REPO_URL = "https://github.com/launchshield-demo/vulnerable-playground"
+  PRESET_TARGET_URL = "https://vulnerable-playground.launchshield.dev"
+
+# Persist run artefacts so `data/runs/` survives redeploys.
+[[mounts]]
+  source = "launchshield_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 100
+    soft_limit = 60
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    protocol = "http"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
