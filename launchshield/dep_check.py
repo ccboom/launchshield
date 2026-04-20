@@ -16,6 +16,8 @@ class DependencyEntry:
     name: str
     version: str
     manifest_path: str
+    specifier: str = ""
+    pinned: bool = True
 
 
 @dataclass
@@ -30,7 +32,9 @@ class DependencyVuln:
 
 
 _TOML_DEP_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*=\s*\"([^\"]+)\"")
-_REQ_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*==\s*([A-Za-z0-9_.\-]+)")
+_REQ_RE = re.compile(
+    r"^\s*([A-Za-z0-9_.\-]+)(?:\[[A-Za-z0-9_,.\-]+\])?\s*(==|~=|>=|<=|>|<)\s*([A-Za-z0-9_.\-]+)"
+)
 
 
 def parse_requirements_txt(path: str, content: str) -> List[DependencyEntry]:
@@ -45,8 +49,10 @@ def parse_requirements_txt(path: str, content: str) -> List[DependencyEntry]:
                 DependencyEntry(
                     ecosystem="pypi",
                     name=match.group(1),
-                    version=match.group(2),
+                    version=match.group(3),
                     manifest_path=path,
+                    specifier=f"{match.group(2)}{match.group(3)}",
+                    pinned=match.group(2) == "==",
                 )
             )
     return out
@@ -60,13 +66,16 @@ def parse_package_json(path: str, content: str) -> List[DependencyEntry]:
     out: List[DependencyEntry] = []
     for key in ("dependencies", "devDependencies"):
         for name, version in (data.get(key) or {}).items():
-            version_s = str(version).lstrip("^~>=<! ")
+            version_raw = str(version).strip()
+            version_s = version_raw.lstrip("^~>=<! ")
             out.append(
                 DependencyEntry(
                     ecosystem="npm",
                     name=name,
                     version=version_s,
                     manifest_path=path,
+                    specifier=version_raw,
+                    pinned=version_raw == version_s,
                 )
             )
     return out
@@ -87,14 +96,16 @@ def parse_pyproject_toml(path: str, content: str) -> List[DependencyEntry]:
         return out
     project = data.get("project") or {}
     for dep in project.get("dependencies", []) or []:
-        match = re.match(r"([A-Za-z0-9_.\-]+)\s*==\s*([A-Za-z0-9_.\-]+)", dep)
+        match = re.match(r"([A-Za-z0-9_.\-]+)\s*(==|~=|>=|<=|>|<)\s*([A-Za-z0-9_.\-]+)", dep)
         if match:
             out.append(
                 DependencyEntry(
                     ecosystem="pypi",
                     name=match.group(1),
-                    version=match.group(2),
+                    version=match.group(3),
                     manifest_path=path,
+                    specifier=f"{match.group(2)}{match.group(3)}",
+                    pinned=match.group(2) == "==",
                 )
             )
     return out
@@ -280,4 +291,11 @@ _STATIC_ADVISORIES: Dict[Tuple[str, str], DependencyVuln] = {
 
 
 def lookup_vuln(entry: DependencyEntry) -> Optional[DependencyVuln]:
-    return _STATIC_ADVISORIES.get((entry.ecosystem, entry.name.lower()))
+    if not entry.pinned:
+        return None
+    vuln = _STATIC_ADVISORIES.get((entry.ecosystem, entry.name.lower()))
+    if vuln is None:
+        return None
+    if entry.version != vuln.version:
+        return None
+    return vuln

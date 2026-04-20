@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import random
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 from .config import AppConfig, get_config
+from .models import ProviderMode, ProviderSource
 
 
 @dataclass
@@ -205,14 +208,18 @@ class OpenAIProvider:
         if not config.openai_api_key:
             raise RuntimeError("OPENAI_API_KEY missing — cannot use real LLM provider")
         self._config = config
+        self._base_url = _normalize_openai_base_url(config.openai_base_url)
         try:
             from openai import AsyncOpenAI  # type: ignore
         except ImportError as exc:
             raise RuntimeError("openai package not installed") from exc
-        self._client = AsyncOpenAI(api_key=config.openai_api_key)
+        client_kwargs = {"api_key": config.openai_api_key}
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        self._client = AsyncOpenAI(**client_kwargs)
 
     async def _chat(self, system: str, user: str) -> Dict[str, Any]:
-        resp = await self._client.chat.completions.create(
+        request = dict(
             model=self._config.openai_model,
             messages=[
                 {"role": "system", "content": system},
@@ -221,11 +228,32 @@ class OpenAIProvider:
             response_format={"type": "json_object"},
             temperature=0.2,
         )
-        text = resp.choices[0].message.content or "{}"
+        resp = await self._client.chat.completions.create(**request)
+        try:
+            text = _extract_chat_completion_text(resp)
+        except RuntimeError as exc:
+            if not _should_retry_stream(exc):
+                raise
+            text = await self._chat_via_stream(request)
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             return {"raw": text}
+
+    async def _chat_via_stream(self, request: Dict[str, Any]) -> str:
+        stream = await self._client.chat.completions.create(**request, stream=True)
+        chunks: List[str] = []
+        async for chunk in stream:
+            piece = _extract_chat_completion_chunk_text(chunk)
+            if piece:
+                chunks.append(piece)
+        text = "".join(chunks).strip()
+        if text:
+            return text
+        raise RuntimeError(
+            "LLM gateway stream returned no delta content. "
+            "Check model compatibility and upstream gateway response format."
+        )
 
     async def deep_analysis(self, req: DeepAnalysisInput) -> DeepAnalysisResult:
         system = (
@@ -268,6 +296,101 @@ class OpenAIProvider:
 
 def build_provider(config: Optional[AppConfig] = None) -> LLMProvider:
     cfg = config or get_config()
-    if cfg.use_real_llm and cfg.openai_api_key:
+    if _real_provider_available(cfg):
         return OpenAIProvider(cfg)
     return MockLLMProvider(cfg)
+
+
+def describe_provider(config: Optional[AppConfig] = None) -> ProviderSource:
+    cfg = config or get_config()
+    requested_mode = ProviderMode.REAL if cfg.use_real_llm else ProviderMode.MOCK
+    available, fallback_reason = _real_provider_status(cfg)
+    if available:
+        detail = cfg.openai_model
+        normalized_base_url = _normalize_openai_base_url(cfg.openai_base_url)
+        if normalized_base_url:
+            detail = f"{detail} @ {normalized_base_url}"
+        return ProviderSource(
+            requested_mode=requested_mode,
+            effective_mode=ProviderMode.REAL,
+            provider="openai-compatible",
+            detail=detail,
+        )
+    if cfg.use_real_llm:
+        return ProviderSource(
+            requested_mode=requested_mode,
+            effective_mode=ProviderMode.MOCK,
+            provider="mock-llm",
+            detail=fallback_reason or "Real LLM unavailable; using bundled mock analysis",
+        )
+    return ProviderSource(
+        requested_mode=requested_mode,
+        effective_mode=ProviderMode.MOCK,
+        provider="mock-llm",
+        detail="Bundled deterministic demo provider",
+    )
+
+
+def _real_provider_available(config: AppConfig) -> bool:
+    available, _ = _real_provider_status(config)
+    return available
+
+
+def _real_provider_status(config: AppConfig) -> tuple[bool, Optional[str]]:
+    if not config.use_real_llm:
+        return False, None
+    if not config.openai_api_key:
+        return False, "OPENAI_API_KEY missing; using bundled mock analysis"
+    try:
+        importlib.import_module("openai")
+    except ImportError:
+        return False, "openai package not installed; using bundled mock analysis"
+    return True, None
+
+
+def _normalize_openai_base_url(base_url: Optional[str]) -> Optional[str]:
+    if not base_url:
+        return base_url
+    parsed = urlsplit(base_url.strip())
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/v1"
+    normalized = parsed._replace(path=path, query="", fragment="")
+    return urlunsplit(normalized)
+
+
+def _extract_chat_completion_text(resp: Any) -> str:
+    if isinstance(resp, str):
+        preview = " ".join(resp.strip().split())[:160]
+        raise RuntimeError(
+            "LLM gateway returned HTML/text instead of OpenAI JSON payload. "
+            f"Check OPENAI_BASE_URL; response preview: {preview}"
+        )
+
+    choices = getattr(resp, "choices", None)
+    if not choices:
+        raise RuntimeError("LLM gateway returned no choices in chat completion response")
+
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None) if message is not None else None
+    if isinstance(content, str) and content.strip():
+        return content
+    raise RuntimeError(
+        "LLM gateway returned no message content. "
+        "Check model compatibility and upstream gateway response format."
+    )
+
+
+def _extract_chat_completion_chunk_text(chunk: Any) -> str:
+    choices = getattr(chunk, "choices", None)
+    if not choices:
+        return ""
+    delta = getattr(choices[0], "delta", None)
+    content = getattr(delta, "content", None) if delta is not None else None
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _should_retry_stream(exc: RuntimeError) -> bool:
+    return "no message content" in str(exc).lower()

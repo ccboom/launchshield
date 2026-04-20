@@ -10,6 +10,7 @@
     profitPanel: document.getElementById("profit-panel"),
     runMode: document.getElementById("run-mode"),
     runIdPill: document.getElementById("run-id"),
+    runScope: document.getElementById("run-scope"),
     progressFill: document.getElementById("progress-fill"),
     progressCount: document.getElementById("progress-count"),
     progressStage: document.getElementById("progress-stage"),
@@ -27,6 +28,8 @@
     profitSettled: document.getElementById("profit-settled"),
     profitGas: document.getElementById("profit-gas"),
     profitConclusion: document.getElementById("profit-conclusion"),
+    providersGrid: document.getElementById("providers-grid"),
+    providersTail: document.getElementById("providers-tail"),
   };
 
   const state = {
@@ -68,6 +71,7 @@
     elements.profitToolCost.textContent = "$0.000";
     elements.profitSettled.textContent = "0.000 USDC";
     elements.profitGas.textContent = "$0.000";
+    elements.runScope.textContent = "sample";
   }
 
   function showPanels() {
@@ -80,7 +84,7 @@
   function updateProgress() {
     elements.progressCount.textContent = `${state.completed} / ${state.planned}`;
     const pct = state.planned > 0 ? Math.min(100, (state.completed / state.planned) * 100) : 0;
-    elements.progressFill.style.width = pct.toFixed(1) + "%";
+    elements.progressFill.style.width = `${pct.toFixed(1)}%`;
     elements.metricCompleted.textContent = String(state.completed);
     elements.metricConfirmed.textContent = String(state.confirmed);
     elements.metricCritical.textContent = String(state.critical);
@@ -99,8 +103,33 @@
   }
 
   function shortHash(hash) {
-    if (!hash) return "—";
-    return hash.length > 14 ? hash.slice(0, 8) + "…" + hash.slice(-4) : hash;
+    if (!hash) return "--";
+    return hash.length > 14 ? `${hash.slice(0, 8)}...${hash.slice(-4)}` : hash;
+  }
+
+  function renderProviders(providers, tailText) {
+    if (!providers || !elements.providersGrid) return;
+    elements.providersGrid.innerHTML = "";
+    const order = ["payments", "github", "browser", "llm", "aisa"];
+    for (const key of order) {
+      const item = providers[key];
+      if (!item) continue;
+      const article = document.createElement("article");
+      const effective = item.effective_mode || "mock";
+      article.className = `provider-card ${effective}`;
+      article.innerHTML = `
+        <span class="provider-name"></span>
+        <span class="provider-mode"></span>
+        <strong class="provider-label"></strong>
+        <p class="provider-detail"></p>
+      `;
+      article.querySelector(".provider-name").textContent = key;
+      article.querySelector(".provider-mode").textContent = `${item.effective_mode} / requested ${item.requested_mode}`;
+      article.querySelector(".provider-label").textContent = item.provider || "unknown";
+      article.querySelector(".provider-detail").textContent = item.detail || "";
+      elements.providersGrid.appendChild(article);
+    }
+    elements.providersTail.textContent = tailText;
   }
 
   function ensureBillingRow(invocationId) {
@@ -111,16 +140,20 @@
     li.dataset.invocation = invocationId;
     li.innerHTML = `
       <span class="time">--:--:--</span>
-      <span class="tool">—</span>
-      <span class="target">—</span>
-      <span class="amount">—</span>
+      <span class="tool">
+        <span class="tool-label">--</span>
+        <span class="source-badge subtle">source</span>
+      </span>
+      <span class="target">--</span>
+      <span class="amount">--</span>
       <span class="tx">pending</span>
     `;
     elements.billingFeed.prepend(li);
     row = {
       element: li,
       time: li.querySelector(".time"),
-      tool: li.querySelector(".tool"),
+      tool: li.querySelector(".tool-label"),
+      source: li.querySelector(".source-badge"),
       target: li.querySelector(".target"),
       amount: li.querySelector(".amount"),
       tx: li.querySelector(".tx"),
@@ -153,7 +186,7 @@
       <p></p>
     `;
     li.querySelector("h3").textContent = finding.title || finding.finding_id;
-    li.querySelector(".severity").textContent = `${severity} · ${finding.source || ""}`;
+    li.querySelector(".severity").textContent = `${severity} / ${finding.source || ""}`;
     li.querySelector("p").textContent = finding.summary || "";
     list.prepend(li);
   }
@@ -164,8 +197,16 @@
     switch (type) {
       case "run.started": {
         state.planned = payload.planned_invocations || 0;
+        elements.runScope.textContent = payload.scan_scope || "sample";
+        renderProviders(payload.provider_sources, "run config");
         updateProgress();
         elements.progressStage.textContent = "starting";
+        break;
+      }
+      case "run.plan_updated": {
+        state.planned = payload.planned_invocations || state.planned;
+        elements.runScope.textContent = payload.scan_scope || elements.runScope.textContent;
+        updateProgress();
         break;
       }
       case "stage.started": {
@@ -179,6 +220,15 @@
         row.target.textContent = payload.target;
         row.amount.textContent = `${payload.price_usd.toFixed(3)} USD`;
         row.tx.textContent = "invoked";
+        const providerSource = payload.provider_source;
+        if (providerSource) {
+          row.source.textContent = providerSource.effective_mode;
+          row.source.className = `source-badge ${providerSource.effective_mode}`;
+          row.source.title = `${providerSource.provider}${providerSource.detail ? ` - ${providerSource.detail}` : ""}`;
+        } else {
+          row.source.textContent = "local";
+          row.source.className = "source-badge subtle";
+        }
         break;
       }
       case "payment.submitted": {
@@ -266,14 +316,16 @@
     }
   }
 
-  function attachStream(runId, mode) {
+  function attachStream(runId, mode, scanScope) {
     state.runId = runId;
     elements.runIdPill.textContent = runId;
     elements.runMode.textContent = mode;
+    elements.runScope.textContent = scanScope || "sample";
     showPanels();
 
     const types = [
       "run.started",
+      "run.plan_updated",
       "stage.started",
       "tool.invoked",
       "payment.submitted",
@@ -316,11 +368,22 @@
       return;
     }
     const data = await resp.json();
-    attachStream(data.run_id, data.mode);
+    attachStream(data.run_id, data.mode, data.scan_scope);
+  }
+
+  async function loadHealth() {
+    try {
+      const resp = await fetch("/api/health");
+      if (!resp.ok) return;
+      const health = await resp.json();
+      renderProviders(health.providers, "health");
+    } catch (_) {
+      elements.providersTail.textContent = "offline";
+    }
   }
 
   elements.ctaPreset.addEventListener("click", () => {
-    createRun({ mode: "preset-stress" });
+    createRun({ mode: "preset-stress", scan_scope: "sample" });
   });
 
   elements.customForm.addEventListener("submit", (ev) => {
@@ -330,6 +393,9 @@
       mode: "custom-standard",
       repo_url: data.get("repo_url"),
       target_url: data.get("target_url"),
+      scan_scope: data.get("scan_scope") || "sample",
     });
   });
+
+  loadHealth();
 })();

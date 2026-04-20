@@ -7,6 +7,54 @@ from pathlib import Path
 from typing import Optional
 
 
+def _candidate_dotenv_paths() -> list[Path]:
+    repo_root = Path(__file__).resolve().parent.parent
+    candidates = [Path.cwd() / ".env", repo_root / ".env"]
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(path)
+    return ordered
+
+
+def _parse_dotenv_line(raw: str) -> tuple[str, str] | None:
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return None
+    if line.startswith("export "):
+        line = line[len("export ") :].lstrip()
+    key, value = line.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return key, value
+
+
+def _load_dotenv_into_environ() -> None:
+    for path in _candidate_dotenv_paths():
+        if not path.exists():
+            continue
+        try:
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                parsed = _parse_dotenv_line(raw)
+                if parsed is None:
+                    continue
+                key, value = parsed
+                os.environ.setdefault(key, value)
+        except OSError:
+            continue
+
+
+_load_dotenv_into_environ()
+
+
 def _get_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -37,6 +85,7 @@ class AppConfig:
 
     github_token: Optional[str] = field(default_factory=lambda: os.getenv("GITHUB_TOKEN"))
     openai_api_key: Optional[str] = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
+    openai_base_url: Optional[str] = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
     openai_model: str = field(default_factory=lambda: _get("OPENAI_MODEL", "gpt-4.1-mini"))
 
     circle_api_key: Optional[str] = field(default_factory=lambda: os.getenv("CIRCLE_API_KEY"))

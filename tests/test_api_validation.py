@@ -17,6 +17,8 @@ def test_health_endpoint_ok() -> None:
         body = resp.json()
         assert body["status"] == "ok"
         assert body["use_real_payments"] is False
+        assert body["providers"]["llm"]["effective_mode"] == "mock"
+        assert body["providers"]["aisa"]["effective_mode"] == "mock"
 
 
 def test_index_renders() -> None:
@@ -33,6 +35,7 @@ def test_create_run_preset_ok() -> None:
         data = resp.json()
         assert data["run_id"].startswith("run_")
         assert data["mode"] == "preset-stress"
+        assert data["scan_scope"] == "sample"
         assert data["stream_url"].endswith("/events")
 
 
@@ -41,11 +44,13 @@ def test_create_run_custom_ok() -> None:
         "mode": "custom-standard",
         "repo_url": "https://github.com/owner/repo",
         "target_url": "https://example.com",
+        "scan_scope": "full",
     }
     with _client() as client:
         resp = client.post("/api/runs", json=payload)
         assert resp.status_code == 200, resp.text
         assert resp.json()["mode"] == "custom-standard"
+        assert resp.json()["scan_scope"] == "full"
 
 
 def test_create_run_rejects_non_github_repo() -> None:
@@ -68,6 +73,18 @@ def test_create_run_rejects_non_http_target() -> None:
     with _client() as client:
         resp = client.post("/api/runs", json=payload)
         assert resp.status_code == 400
+
+
+def test_create_run_rejects_github_repo_as_target() -> None:
+    payload = {
+        "mode": "custom-standard",
+        "repo_url": "https://github.com/owner/repo",
+        "target_url": "https://github.com/owner/repo",
+    }
+    with _client() as client:
+        resp = client.post("/api/runs", json=payload)
+        assert resp.status_code == 400
+        assert "target site" in resp.json()["detail"]
 
 
 def test_create_run_rejects_invalid_mode() -> None:

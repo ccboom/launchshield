@@ -12,7 +12,7 @@ from typing import Optional, Protocol
 import httpx
 
 from .config import AppConfig, get_config
-from .models import PaymentReceipt
+from .models import PaymentReceipt, ProviderMode, ProviderSource
 
 
 class PaymentError(RuntimeError):
@@ -135,4 +135,36 @@ def build_provider(config: Optional[AppConfig] = None) -> PaymentProvider:
         "USE_REAL_PAYMENTS is true but no provider is configured. "
         "Set ARC_PRIVATE_KEY for direct Arc testnet, "
         "or X402_GATEWAY_BASE_URL + X402_GATEWAY_API_KEY for a gateway."
+    )
+
+
+def describe_provider(config: Optional[AppConfig] = None) -> ProviderSource:
+    cfg = config or get_config()
+    requested_mode = ProviderMode.REAL if cfg.use_real_payments else ProviderMode.MOCK
+    if not cfg.use_real_payments:
+        return ProviderSource(
+            requested_mode=requested_mode,
+            effective_mode=ProviderMode.MOCK,
+            provider="mock-x402",
+            detail="Deterministic sandbox receipts only",
+        )
+    if cfg.arc_private_key:
+        return ProviderSource(
+            requested_mode=requested_mode,
+            effective_mode=ProviderMode.REAL,
+            provider="arc-testnet",
+            detail=cfg.arc_rpc_url,
+        )
+    if cfg.x402_gateway_base_url and cfg.x402_gateway_api_key:
+        return ProviderSource(
+            requested_mode=requested_mode,
+            effective_mode=ProviderMode.REAL,
+            provider="x402-gateway",
+            detail=cfg.x402_gateway_base_url,
+        )
+    return ProviderSource(
+        requested_mode=requested_mode,
+        effective_mode=ProviderMode.ERROR,
+        provider="unconfigured-payments",
+        detail="Need ARC_PRIVATE_KEY or X402 gateway credentials",
     )

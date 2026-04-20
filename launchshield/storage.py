@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -48,7 +49,7 @@ class RunRegistry:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".json.tmp")
             tmp.write_text(run.model_dump_json(indent=2), encoding="utf-8")
-            tmp.replace(path)
+            self._replace_with_retry(tmp, path)
 
     def get(self, run_id: str) -> Optional[ScanRun]:
         with self._lock:
@@ -77,6 +78,20 @@ class RunRegistry:
         (adir / "profitability.json").write_text(
             run.profitability.model_dump_json(indent=2), encoding="utf-8"
         )
+
+    def _replace_with_retry(self, source: Path, target: Path, *, attempts: int = 5) -> None:
+        last_error: Optional[PermissionError] = None
+        for index in range(attempts):
+            try:
+                source.replace(target)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                if index == attempts - 1:
+                    break
+                time.sleep(0.05 * (index + 1))
+        assert last_error is not None
+        raise last_error
 
 
 _registry_singleton: Optional[RunRegistry] = None

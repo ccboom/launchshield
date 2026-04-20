@@ -45,9 +45,16 @@
             Target Site URL
             <input type="url" name="target_url" placeholder="https://example.com" required />
           </label>
+          <label>
+            Scan Scope
+            <select name="scan_scope">
+              <option value="sample">sample</option>
+              <option value="full">full</option>
+            </select>
+          </label>
           <button class="cta secondary" type="submit">
             Run Standard Scan
-            <span class="cta-sub">{{ custom_total }} paid tool calls</span>
+            <span class="cta-sub">sample {{ custom_total }} / full dynamic + {{ custom_analysis_total }} baseline</span>
           </button>
         </form>
       </div>
@@ -57,11 +64,20 @@
       </p>
     </section>
 
+    <section class="panel providers-panel" id="providers-panel">
+      <header>
+        <h2>Provider Sources</h2>
+        <span class="pill subtle" id="providers-tail">booting</span>
+      </header>
+      <div class="providers-grid" id="providers-grid"></div>
+    </section>
+
     <section class="panel execution-panel" hidden id="execution-panel">
       <header>
         <h2>Execution</h2>
         <span class="pill" id="run-mode">—</span>
         <span class="pill subtle" id="run-id">—</span>
+        <span class="pill subtle" id="run-scope">sample</span>
       </header>
 
       <div class="progress-wrapper">

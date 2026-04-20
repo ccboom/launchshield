@@ -7,7 +7,7 @@ import string
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from . import aisa as aisa_mod
 from . import llm as llm_mod
@@ -16,7 +16,7 @@ from . import profitability as profitability_mod
 from . import repo_source as repo_source_mod
 from .browser_runtime import BrowserRuntime
 from .config import AppConfig, get_config
-from .dep_check import lookup_vuln, parse_manifests
+from .dep_check import DependencyEntry, lookup_vuln, parse_manifests
 from .events import StreamEvent, make_event
 from .models import (
     CreateRunRequest,
@@ -27,15 +27,16 @@ from .models import (
     PaymentReceipt,
     ProfitabilitySnapshot,
     RunMode,
+    ScanScope,
     RunStatus,
     ScanRun,
     ToolInvocation,
 )
-from .presets import tier_for
+from .presets import TierConfig, tier_for
 from .pricing import price_for
 from .repo_scan import FileMatch, scan_file
 from .repo_source import RepoFile, RepoSource, priority_sort
-from .site_probes import ProbeFinding, collect_site_findings
+from .site_probes import ProbePlan, build_probe_plan, execute_probe
 from .storage import RunRegistry, get_registry
 
 STAGES = [
@@ -49,6 +50,8 @@ STAGES = [
     "summary.profitability",
     "summary.finalize",
 ]
+
+_T = TypeVar("_T")
 
 
 def _utcnow() -> datetime:
@@ -161,13 +164,20 @@ class Orchestrator:
             target_url = request.target_url
 
         tier = tier_for(request.mode)
+        planned_breakdown = _planned_breakdown_for_tier(tier)
+        planned_invocations = tier.total()
+        if request.scan_scope == ScanScope.FULL:
+            planned_breakdown = {}
+            planned_invocations = 0
         run = ScanRun(
             run_id=_new_run_id(),
             mode=request.mode,
+            scan_scope=request.scan_scope,
             status=RunStatus.QUEUED,
             repo_url=repo_url,
             target_url=target_url,
-            planned_invocations=tier.total(),
+            planned_invocations=planned_invocations,
+            planned_breakdown=planned_breakdown,
         )
         self._registry.save(run)
         return run
@@ -199,24 +209,35 @@ class Orchestrator:
         run.status = RunStatus.RUNNING
         run.started_at = _utcnow()
         self._registry.save(run)
+        tier = tier_for(run.mode)
+        browser = BrowserRuntime(self._config)
+        run.provider_sources = {
+            "payments": payments_mod.describe_provider(self._config),
+            "github": repo_source_mod.describe_provider(self._config),
+            "llm": llm_mod.describe_provider(self._config),
+            "aisa": aisa_mod.describe_provider(self._config),
+            "browser": await browser.describe_provider(),
+        }
+        self._registry.save(run)
         await self._bus.publish(
             make_event(
                 "run.started",
                 run_id,
                 mode=run.mode.value,
+                scan_scope=run.scan_scope.value,
                 repo_url=run.repo_url,
                 target_url=run.target_url,
                 planned_invocations=run.planned_invocations,
+                planned_breakdown=run.planned_breakdown,
+                provider_sources=_provider_payload(run.provider_sources),
                 stages=STAGES,
             )
         )
 
-        tier = tier_for(run.mode)
         payment_provider = payments_mod.build_provider(self._config)
         llm_provider = llm_mod.build_provider(self._config)
         aisa_provider = aisa_mod.build_provider(self._config)
         repo_provider = repo_source_mod.build_provider(self._config)
-        browser = BrowserRuntime(self._config)
 
         try:
             # Stage 0: repo.fetch (preparation only, no billable invocations)
@@ -227,11 +248,42 @@ class Orchestrator:
             except Exception as exc:
                 await self._fail_run(run, f"repo fetch failed: {exc!r}")
                 return
-            await self._stage_completed(run_id, "repo.fetch", files=len(files), manifests=len(manifests))
+            deps = parse_manifests(manifests)
+            selected_files = _select_file_targets(files, run.scan_scope, tier.file_scan)
+            selected_deps = _select_dependency_targets(deps, run.scan_scope, tier.dep_lookup)
+            probe_plans = build_probe_plan(run.target_url, tier.site_probe)
+            run.planned_breakdown = {
+                "file_scan": len(selected_files),
+                "dep_lookup": len(selected_deps),
+                "site_probe": len(probe_plans),
+                "deep_analysis": tier.deep_analysis,
+                "aisa_verify": tier.aisa_verify,
+                "fix_suggestion": tier.fix_suggestion,
+            }
+            run.planned_invocations = sum(run.planned_breakdown.values())
+            self._registry.save(run)
+            await self._bus.publish(
+                make_event(
+                    "run.plan_updated",
+                    run_id,
+                    planned_invocations=run.planned_invocations,
+                    planned_breakdown=run.planned_breakdown,
+                    scan_scope=run.scan_scope.value,
+                )
+            )
+            await self._stage_completed(
+                run_id,
+                "repo.fetch",
+                files=len(files),
+                manifests=len(manifests),
+                dependencies=len(deps),
+                selected_files=len(selected_files),
+                selected_dependencies=len(selected_deps),
+            )
 
-            await self._stage_file_scan(run, tier.file_scan, files, repo_provider, payment_provider)
-            await self._stage_dep_lookup(run, tier.dep_lookup, manifests, payment_provider)
-            await self._stage_site_probes(run, tier.site_probe, browser, payment_provider)
+            await self._stage_file_scan(run, selected_files, repo_provider, payment_provider)
+            await self._stage_dep_lookup(run, selected_deps, payment_provider)
+            await self._stage_site_probes(run, probe_plans, browser, payment_provider)
             await self._stage_deep_analysis(run, tier.deep_analysis, llm_provider, payment_provider)
             await self._stage_aisa_verify(run, tier.aisa_verify, aisa_provider, payment_provider)
             await self._stage_fix_suggestions(run, tier.fix_suggestion, llm_provider, payment_provider)
@@ -261,19 +313,14 @@ class Orchestrator:
     async def _stage_file_scan(
         self,
         run: ScanRun,
-        quota: int,
-        files: List[str],
+        targets: List[str],
         repo_provider: RepoSource,
         payment_provider,
     ) -> None:
         stage = "repo.file_scan"
-        await self._stage_started(run.run_id, stage, quota=quota)
+        await self._stage_started(run.run_id, stage, quota=len(targets), scan_scope=run.scan_scope.value)
 
-        chosen = priority_sort(files)[:quota]
-        while len(chosen) < quota and files:
-            chosen.append(files[(len(chosen)) % len(files)])
-
-        for target_path in chosen[:quota]:
+        for target_path in targets:
             invocation = await self._begin_invocation(
                 run, stage=stage, tool_name="file_scan", target=target_path
             )
@@ -308,25 +355,20 @@ class Orchestrator:
                 created.append(finding)
             await self._complete_invocation(run, invocation, summary=summary, findings=created)
 
-        await self._stage_completed(run.run_id, stage, completed=quota)
+        await self._stage_completed(run.run_id, stage, completed=len(targets))
 
     async def _stage_dep_lookup(
         self,
         run: ScanRun,
-        quota: int,
-        manifests: List[RepoFile],
+        targets: List[Optional[DependencyEntry]],
         payment_provider,
     ) -> None:
         stage = "repo.dep_lookup"
-        await self._stage_started(run.run_id, stage, quota=quota)
+        await self._stage_started(run.run_id, stage, quota=len(targets), scan_scope=run.scan_scope.value)
 
-        deps = parse_manifests(manifests)
-        if not deps:
-            deps = [None] * quota  # type: ignore[list-item]
-
-        for i in range(quota):
-            dep = deps[i % max(1, len(deps))] if deps else None
-            target = f"{dep.ecosystem}:{dep.name}@{dep.version}" if dep else "empty-manifest"
+        for dep in targets:
+            dep_label = (dep.specifier or dep.version) if dep else ""
+            target = f"{dep.ecosystem}:{dep.name}@{dep_label}" if dep else "empty-manifest"
             invocation = await self._begin_invocation(
                 run, stage=stage, tool_name="dep_lookup", target=target
             )
@@ -353,38 +395,63 @@ class Orchestrator:
                     created.append(finding)
             await self._complete_invocation(run, invocation, summary=summary, findings=created)
 
-        await self._stage_completed(run.run_id, stage, completed=quota)
+        await self._stage_completed(run.run_id, stage, completed=len(targets))
 
     async def _stage_site_probes(
         self,
         run: ScanRun,
-        quota: int,
+        plans: List[ProbePlan],
         browser: BrowserRuntime,
         payment_provider,
     ) -> None:
         stage = "site.browser_probes"
-        await self._stage_started(run.run_id, stage, quota=quota)
+        await self._stage_started(run.run_id, stage, quota=len(plans))
 
-        try:
-            probe_findings = await collect_site_findings(browser, run.target_url, limit=quota)
-        except Exception as exc:
-            probe_findings = []
-            # don't fail the whole run — surface as transient
-            run.error_message = (run.error_message or "") + f" site probe error: {exc!r};"
+        base_snapshot = None
+        base_snapshot_error: Optional[str] = None
 
-        for i in range(quota):
-            probe: Optional[ProbeFinding] = probe_findings[i] if i < len(probe_findings) else None
-            target = probe.target if probe else f"{run.target_url}#probe-{i+1}"
+        for plan in plans:
             invocation = await self._begin_invocation(
-                run, stage=stage, tool_name="site_probe", target=target
+                run, stage=stage, tool_name="site_probe", target=plan.target
             )
-            await self._submit_payment(run, invocation, payment_provider, memo=f"site_probe:{target}")
+            await self._submit_payment(run, invocation, payment_provider, memo=f"site_probe:{plan.target}")
             if invocation.status == InvocationStatus.FAILED:
+                continue
+            if plan.probe != "path" and base_snapshot is None and base_snapshot_error is None:
+                try:
+                    base_snapshot = await browser.fetch(run.target_url)
+                    describe_provider = getattr(browser, "describe_provider", None)
+                    if callable(describe_provider):
+                        run.provider_sources["browser"] = await describe_provider()
+                    self._registry.save(run)
+                except Exception as exc:
+                    base_snapshot_error = f"site probe error: {exc!r}"
+                    existing = (run.error_message or "").strip()
+                    run.error_message = (
+                        f"{existing}; {base_snapshot_error}" if existing else base_snapshot_error
+                    )
+                    self._registry.save(run)
+            if plan.probe != "path" and base_snapshot_error:
+                await self._fail_invocation(run, invocation, base_snapshot_error)
+                continue
+            try:
+                probe = await execute_probe(
+                    browser,
+                    plan,
+                    run.target_url,
+                    base_snapshot=base_snapshot,
+                )
+            except Exception as exc:
+                reason = f"site probe error: {exc!r}"
+                existing = (run.error_message or "").strip()
+                run.error_message = f"{existing}; {reason}" if existing else reason
+                self._registry.save(run)
+                await self._fail_invocation(run, invocation, reason)
                 continue
 
             created: List[Finding] = []
             if probe:
-                summary = f"{probe.probe} flagged {target}"
+                summary = f"{probe.probe} flagged {plan.target}"
                 finding = Finding(
                     finding_id=_new_finding_id(),
                     source=FindingSource.SITE_PROBE,
@@ -397,10 +464,10 @@ class Orchestrator:
                 )
                 created.append(finding)
             else:
-                summary = f"probe passed on {target}"
+                summary = f"probe passed on {plan.target}"
             await self._complete_invocation(run, invocation, summary=summary, findings=created)
 
-        await self._stage_completed(run.run_id, stage, completed=quota)
+        await self._stage_completed(run.run_id, stage, completed=len(plans))
 
     async def _stage_deep_analysis(
         self,
@@ -432,12 +499,14 @@ class Orchestrator:
                 rule = _rule_from_finding(target_finding)
                 language = "python"
                 snippet = target_finding.evidence if target_finding else "synthetic snippet"
-                analysis = await llm_provider.deep_analysis(
-                    llm_mod.DeepAnalysisInput(
-                        snippet=snippet,
-                        rule=rule,
-                        language=language,
-                        evidence=target_finding.evidence if target_finding else "synthetic",
+                analysis = await self._retry_once(
+                    lambda: llm_provider.deep_analysis(
+                        llm_mod.DeepAnalysisInput(
+                            snippet=snippet,
+                            rule=rule,
+                            language=language,
+                            evidence=target_finding.evidence if target_finding else "synthetic",
+                        )
                     )
                 )
                 summary = analysis.risk_summary
@@ -489,7 +558,9 @@ class Orchestrator:
             try:
                 subject = target_finding.title if target_finding else "generic"
                 category = target_finding.source.value if target_finding else "file_scan"
-                verification = await aisa_provider.verify(subject, category)
+                verification = await self._retry_once(
+                    lambda: aisa_provider.verify(subject, category)
+                )
             except Exception as exc:
                 await self._fail_invocation(run, invocation, f"aisa error: {exc!r}")
                 continue
@@ -543,20 +614,24 @@ class Orchestrator:
             try:
                 rule = _rule_from_finding(target_finding)
                 language = "python"
-                analysis = await llm_provider.deep_analysis(
-                    llm_mod.DeepAnalysisInput(
-                        snippet=target_finding.evidence if target_finding else "",
-                        rule=rule,
-                        language=language,
-                        evidence=target_finding.evidence if target_finding else "",
+                analysis = await self._retry_once(
+                    lambda: llm_provider.deep_analysis(
+                        llm_mod.DeepAnalysisInput(
+                            snippet=target_finding.evidence if target_finding else "",
+                            rule=rule,
+                            language=language,
+                            evidence=target_finding.evidence if target_finding else "",
+                        )
                     )
                 )
-                suggestion = await llm_provider.fix_suggestion(
-                    llm_mod.FixSuggestionInput(
-                        snippet=target_finding.evidence if target_finding else "",
-                        rule=rule,
-                        language=language,
-                        analysis=analysis,
+                suggestion = await self._retry_once(
+                    lambda: llm_provider.fix_suggestion(
+                        llm_mod.FixSuggestionInput(
+                            snippet=target_finding.evidence if target_finding else "",
+                            rule=rule,
+                            language=language,
+                            analysis=analysis,
+                        )
                     )
                 )
             except Exception as exc:
@@ -643,6 +718,7 @@ class Orchestrator:
                 tool_name=tool_name,
                 target=target,
                 price_usd=invocation.price_usd,
+                provider_source=_provider_source_for_tool(run, tool_name),
             )
         )
         return invocation
@@ -742,9 +818,12 @@ class Orchestrator:
         invocation: ToolInvocation,
         reason: str,
     ) -> None:
+        first_terminal_transition = invocation.completed_at is None
         invocation.status = InvocationStatus.FAILED
         invocation.error_message = reason
         invocation.completed_at = _utcnow()
+        if first_terminal_transition:
+            run.completed_invocations += 1
         self._registry.save(run)
         await self._bus.publish(
             make_event(
@@ -763,6 +842,73 @@ class Orchestrator:
         run.completed_at = _utcnow()
         self._registry.save(run)
         await self._bus.publish(make_event("run.failed", run.run_id, reason=reason))
+
+    async def _retry_once(self, operation: Callable[[], Awaitable[_T]]) -> _T:
+        last_error: Optional[Exception] = None
+        for _ in range(2):
+            try:
+                return await operation()
+            except Exception as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
+
+def _planned_breakdown_for_tier(tier: TierConfig) -> Dict[str, int]:
+    return {
+        "file_scan": tier.file_scan,
+        "dep_lookup": tier.dep_lookup,
+        "site_probe": tier.site_probe,
+        "deep_analysis": tier.deep_analysis,
+        "aisa_verify": tier.aisa_verify,
+        "fix_suggestion": tier.fix_suggestion,
+    }
+
+
+def _select_file_targets(files: List[str], scan_scope: ScanScope, quota: int) -> List[str]:
+    ordered = priority_sort(files)
+    if scan_scope == ScanScope.FULL:
+        return ordered
+    selected = ordered[:quota]
+    while len(selected) < quota and ordered:
+        selected.append(ordered[len(selected) % len(ordered)])
+    return selected[:quota]
+
+
+def _select_dependency_targets(
+    deps: List[DependencyEntry],
+    scan_scope: ScanScope,
+    quota: int,
+) -> List[Optional[DependencyEntry]]:
+    if scan_scope == ScanScope.FULL:
+        return list(deps)
+    if not deps:
+        return [None] * quota
+    return [deps[index % len(deps)] for index in range(quota)]
+
+
+def _provider_payload(provider_sources: Dict[str, object]) -> Dict[str, dict]:
+    return {
+        key: value.model_dump() if hasattr(value, "model_dump") else dict(value)
+        for key, value in provider_sources.items()
+    }
+
+
+def _provider_source_for_tool(run: ScanRun, tool_name: str) -> Optional[dict]:
+    category_map = {
+        "file_scan": "github",
+        "site_probe": "browser",
+        "deep_analysis": "llm",
+        "fix_suggestion": "llm",
+        "aisa_verify": "aisa",
+    }
+    category = category_map.get(tool_name)
+    if not category:
+        return None
+    source = run.provider_sources.get(category)
+    if source is None:
+        return None
+    return source.model_dump()
 
 
 def _rule_from_finding(finding: Optional[Finding]) -> str:

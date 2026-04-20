@@ -29,59 +29,85 @@ class ProbeFinding:
     evidence: str
 
 
+@dataclass(frozen=True)
+class ProbePlan:
+    probe: str
+    target: str
+    detail: Optional[str] = None
+
+
+HEADER_CHECKS = (
+    ("Content-Security-Policy", FindingSeverity.HIGH, "Missing CSP header"),
+    ("X-Frame-Options", FindingSeverity.MEDIUM, "Missing X-Frame-Options"),
+    ("Strict-Transport-Security", FindingSeverity.MEDIUM, "Missing HSTS header"),
+)
+
+
 def _header_missing(snapshot: PageSnapshot, header: str) -> bool:
     return header.lower() not in {k.lower() for k in snapshot.headers}
 
 
+def _header_probe(
+    snapshot: PageSnapshot,
+    header: str,
+    severity: FindingSeverity,
+    title: str,
+) -> Optional[ProbeFinding]:
+    if not _header_missing(snapshot, header):
+        return None
+    return ProbeFinding(
+        probe="missing_security_header",
+        severity=severity,
+        target=snapshot.url,
+        title=title,
+        summary=f"{header} is not returned by {snapshot.url}.",
+        evidence=(
+            f"source={snapshot.capture_source}; "
+            f"headers={list(snapshot.headers.keys())[:8]}"
+        ),
+    )
+
+
+def _server_header_probe(snapshot: PageSnapshot) -> Optional[ProbeFinding]:
+    server_header = snapshot.headers.get("server")
+    if not server_header:
+        return None
+    return ProbeFinding(
+        probe="server_header_exposed",
+        severity=FindingSeverity.LOW,
+        target=snapshot.url,
+        title="Server banner exposed",
+        summary=f"Server identifies itself as `{server_header}`.",
+        evidence=f"source={snapshot.capture_source}; Server: {server_header}",
+    )
+
+
+def _weak_cors_probe(snapshot: PageSnapshot) -> Optional[ProbeFinding]:
+    cors = snapshot.headers.get("access-control-allow-origin")
+    if cors != "*":
+        return None
+    return ProbeFinding(
+        probe="weak_cors_config",
+        severity=FindingSeverity.HIGH,
+        target=snapshot.url,
+        title="Permissive CORS on response",
+        summary="`Access-Control-Allow-Origin: *` returned on a page that may serve credentials.",
+        evidence=f"source={snapshot.capture_source}; Access-Control-Allow-Origin: *",
+    )
+
+
 def http_header_probe(snapshot: PageSnapshot) -> List[ProbeFinding]:
     out: List[ProbeFinding] = []
-    checks = [
-        ("Content-Security-Policy", FindingSeverity.HIGH, "Missing CSP header"),
-        ("X-Frame-Options", FindingSeverity.MEDIUM, "Missing X-Frame-Options"),
-        (
-            "Strict-Transport-Security",
-            FindingSeverity.MEDIUM,
-            "Missing HSTS header",
-        ),
-    ]
-    for header, severity, title in checks:
-        if _header_missing(snapshot, header):
-            out.append(
-                ProbeFinding(
-                    probe="missing_security_header",
-                    severity=severity,
-                    target=snapshot.url,
-                    title=title,
-                    summary=f"{header} is not returned by {snapshot.url}.",
-                    evidence=f"HTTP response headers: {list(snapshot.headers.keys())[:8]}",
-                )
-            )
-
-    server_header = snapshot.headers.get("server")
-    if server_header:
-        out.append(
-            ProbeFinding(
-                probe="server_header_exposed",
-                severity=FindingSeverity.LOW,
-                target=snapshot.url,
-                title="Server banner exposed",
-                summary=f"Server identifies itself as `{server_header}`.",
-                evidence=f"Server: {server_header}",
-            )
-        )
-
-    cors = snapshot.headers.get("access-control-allow-origin")
-    if cors == "*":
-        out.append(
-            ProbeFinding(
-                probe="weak_cors_config",
-                severity=FindingSeverity.HIGH,
-                target=snapshot.url,
-                title="Permissive CORS on response",
-                summary="`Access-Control-Allow-Origin: *` returned on a page that may serve credentials.",
-                evidence="Access-Control-Allow-Origin: *",
-            )
-        )
+    for header, severity, title in HEADER_CHECKS:
+        finding = _header_probe(snapshot, header, severity, title)
+        if finding:
+            out.append(finding)
+    server_finding = _server_header_probe(snapshot)
+    if server_finding:
+        out.append(server_finding)
+    cors_finding = _weak_cors_probe(snapshot)
+    if cors_finding:
+        out.append(cors_finding)
     return out
 
 
@@ -112,18 +138,26 @@ def sensitive_path_probe(path: str, status_code: int, base_url: str) -> Optional
 def inline_script_probe(snapshot: PageSnapshot) -> List[ProbeFinding]:
     findings: List[ProbeFinding] = []
     for idx, body in enumerate(snapshot.inline_scripts[:3]):
-        if "eval(" in body or "innerHTML" in body:
-            findings.append(
-                ProbeFinding(
-                    probe="unsafe_innerhtml",
-                    severity=FindingSeverity.HIGH,
-                    target=snapshot.url,
-                    title="Inline script uses an unsafe DOM sink",
-                    summary="An inline <script> block on the page uses `eval()` or `innerHTML` on data of unknown origin.",
-                    evidence=f"inline_script[{idx}]: {body[:160]}",
-                )
-            )
+        finding = inline_script_probe_at(snapshot, idx)
+        if finding:
+            findings.append(finding)
     return findings
+
+
+def inline_script_probe_at(snapshot: PageSnapshot, idx: int) -> Optional[ProbeFinding]:
+    if idx >= len(snapshot.inline_scripts[:3]):
+        return None
+    body = snapshot.inline_scripts[idx]
+    if "eval(" not in body and "innerHTML" not in body:
+        return None
+    return ProbeFinding(
+        probe="unsafe_innerhtml",
+        severity=FindingSeverity.HIGH,
+        target=snapshot.url,
+        title="Inline script uses an unsafe DOM sink",
+        summary="An inline <script> block on the page uses `eval()` or `innerHTML` on data of unknown origin.",
+        evidence=f"source={snapshot.capture_source}; inline_script[{idx}]: {body[:160]}",
+    )
 
 
 def next_data_probe(snapshot: PageSnapshot) -> Optional[ProbeFinding]:
@@ -135,7 +169,7 @@ def next_data_probe(snapshot: PageSnapshot) -> Optional[ProbeFinding]:
         target=snapshot.url,
         title="__NEXT_DATA__ payload present",
         summary="Inline __NEXT_DATA__ blob ships server-side state to the browser.",
-        evidence="Detected `__NEXT_DATA__` in HTML payload.",
+        evidence=f"source={snapshot.capture_source}; detected __NEXT_DATA__ in page payload",
     )
 
 
@@ -148,7 +182,7 @@ def mixed_content_probe(snapshot: PageSnapshot) -> Optional[ProbeFinding]:
         target=snapshot.url,
         title="Mixed content detected",
         summary="HTTPS page embeds at least one HTTP sub-resource.",
-        evidence="Found `http://` references inside an HTTPS page.",
+        evidence=f"source={snapshot.capture_source}; found http:// references inside an HTTPS page",
     )
 
 
@@ -178,3 +212,53 @@ async def collect_site_findings(
             break
 
     return findings[:limit]
+
+
+def build_probe_plan(base_url: str, limit: int) -> List[ProbePlan]:
+    plans = [
+        ProbePlan(probe="header", target=base_url, detail="Content-Security-Policy"),
+        ProbePlan(probe="header", target=base_url, detail="X-Frame-Options"),
+        ProbePlan(probe="header", target=base_url, detail="Strict-Transport-Security"),
+        ProbePlan(probe="server_header", target=base_url),
+        ProbePlan(probe="weak_cors", target=base_url),
+    ]
+    plans.extend(ProbePlan(probe="path", target=base_url + path, detail=path) for path in SENSITIVE_PATHS[:4])
+    plans.extend(
+        [
+            ProbePlan(probe="next_data", target=base_url),
+            ProbePlan(probe="mixed_content", target=base_url),
+            ProbePlan(probe="inline_script", target=base_url, detail="0"),
+        ]
+    )
+    plans.extend(ProbePlan(probe="path", target=base_url + path, detail=path) for path in SENSITIVE_PATHS[4:])
+    return plans[:limit]
+
+
+async def execute_probe(
+    runtime: BrowserRuntime,
+    plan: ProbePlan,
+    base_url: str,
+    *,
+    base_snapshot: Optional[PageSnapshot] = None,
+) -> Optional[ProbeFinding]:
+    if plan.probe == "path":
+        status = await runtime.probe_path(base_url, plan.detail or "")
+        return sensitive_path_probe(plan.detail or "", status, base_url)
+
+    snapshot = base_snapshot or await runtime.fetch(base_url)
+    if plan.probe == "header":
+        for header, severity, title in HEADER_CHECKS:
+            if header == plan.detail:
+                return _header_probe(snapshot, header, severity, title)
+        raise ValueError(f"unknown header probe: {plan.detail}")
+    if plan.probe == "server_header":
+        return _server_header_probe(snapshot)
+    if plan.probe == "weak_cors":
+        return _weak_cors_probe(snapshot)
+    if plan.probe == "next_data":
+        return next_data_probe(snapshot)
+    if plan.probe == "mixed_content":
+        return mixed_content_probe(snapshot)
+    if plan.probe == "inline_script":
+        return inline_script_probe_at(snapshot, int(plan.detail or "0"))
+    raise ValueError(f"unknown probe type: {plan.probe}")

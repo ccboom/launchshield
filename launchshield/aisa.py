@@ -9,6 +9,7 @@ from typing import Optional, Protocol
 import httpx
 
 from .config import AppConfig, get_config
+from .models import ProviderMode, ProviderSource
 
 
 @dataclass
@@ -78,3 +79,33 @@ def build_provider(config: Optional[AppConfig] = None) -> AisaProvider:
     if cfg.use_real_aisa and cfg.aisa_api_key and cfg.aisa_base_url:
         return RealAisaProvider(cfg)
     return MockAisaProvider(cfg)
+
+
+def describe_provider(config: Optional[AppConfig] = None) -> ProviderSource:
+    cfg = config or get_config()
+    requested_mode = ProviderMode.REAL if cfg.use_real_aisa else ProviderMode.MOCK
+    if cfg.use_real_aisa and cfg.aisa_api_key and cfg.aisa_base_url:
+        return ProviderSource(
+            requested_mode=requested_mode,
+            effective_mode=ProviderMode.REAL,
+            provider="aisa-api",
+            detail=cfg.aisa_base_url,
+        )
+    if cfg.use_real_aisa:
+        missing = []
+        if not cfg.aisa_api_key:
+            missing.append("AISA_API_KEY")
+        if not cfg.aisa_base_url:
+            missing.append("AISA_BASE_URL")
+        return ProviderSource(
+            requested_mode=requested_mode,
+            effective_mode=ProviderMode.MOCK,
+            provider="mock-aisa",
+            detail=f"Missing {', '.join(missing)}; using bundled intel stub",
+        )
+    return ProviderSource(
+        requested_mode=requested_mode,
+        effective_mode=ProviderMode.MOCK,
+        provider="mock-aisa",
+        detail="Bundled deterministic demo provider",
+    )

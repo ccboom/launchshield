@@ -57,7 +57,10 @@ _BASE_RULES: List[Rule] = [
     Rule(
         name="debug_mode_exposed",
         severity=FindingSeverity.MEDIUM,
-        pattern=re.compile(r"DEBUG\s*[:=]\s*(?:True|true|1|\"on\"|'on')"),
+        pattern=re.compile(
+            r"\bdebug\b\s*[:=]\s*(?:true|1|\"on\"|'on')",
+            re.IGNORECASE,
+        ),
         reason="Debug mode left enabled.",
     ),
     Rule(

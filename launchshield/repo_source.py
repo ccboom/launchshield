@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .config import AppConfig, get_config
+from .models import ProviderMode, ProviderSource
 
 ALLOWED_EXTENSIONS = {
     ".py",
@@ -496,3 +497,26 @@ def build_provider(config: Optional[AppConfig] = None) -> RepoSource:
     if cfg.use_real_github:
         return GithubRepoSource(cfg)
     return MockRepoSource(cfg)
+
+
+def describe_provider(config: Optional[AppConfig] = None) -> ProviderSource:
+    cfg = config or get_config()
+    requested_mode = ProviderMode.REAL if cfg.use_real_github else ProviderMode.MOCK
+    if cfg.use_real_github:
+        detail = "GitHub API"
+        if cfg.github_token:
+            detail += " with token"
+        else:
+            detail += " anonymous rate limit"
+        return ProviderSource(
+            requested_mode=requested_mode,
+            effective_mode=ProviderMode.REAL,
+            provider="github-api",
+            detail=detail,
+        )
+    return ProviderSource(
+        requested_mode=requested_mode,
+        effective_mode=ProviderMode.MOCK,
+        provider="mock-repo",
+        detail="Bundled repository fixture",
+    )

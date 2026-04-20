@@ -43,6 +43,21 @@ def test_requirements_txt_parser() -> None:
     assert ("pypi", "requests", "2.19.1") in names
 
 
+def test_requirements_txt_parser_supports_version_ranges() -> None:
+    entries = parse_requirements_txt(
+        "requirements.txt",
+        "fastapi>=0.110.0\nuvicorn[standard]>=0.29.0\npydantic~=2.6.0\n",
+    )
+    by_name = {entry.name: entry for entry in entries}
+    assert by_name["fastapi"].version == "0.110.0"
+    assert by_name["fastapi"].specifier == ">=0.110.0"
+    assert by_name["fastapi"].pinned is False
+    assert by_name["uvicorn"].version == "0.29.0"
+    assert by_name["uvicorn"].specifier == ">=0.29.0"
+    assert by_name["pydantic"].version == "2.6.0"
+    assert by_name["pydantic"].specifier == "~=2.6.0"
+
+
 def test_package_json_parser() -> None:
     content = (
         '{"dependencies": {"lodash": "^4.17.11", "express": "4.16.0"},'
@@ -62,12 +77,34 @@ def test_lookup_vuln_returns_known_advisory() -> None:
     assert vuln.advisory_id == "CVE-2019-10744"
 
 
+def test_lookup_vuln_ignores_safe_versions() -> None:
+    entry = DependencyEntry(ecosystem="npm", name="lodash", version="4.17.21", manifest_path="p")
+    assert lookup_vuln(entry) is None
+
+
+def test_lookup_vuln_ignores_unpinned_ranges() -> None:
+    entry = DependencyEntry(
+        ecosystem="pypi",
+        name="requests",
+        version="2.19.1",
+        manifest_path="requirements.txt",
+        specifier=">=2.19.1",
+        pinned=False,
+    )
+    assert lookup_vuln(entry) is None
+
+
 def test_parse_manifests_against_fixtures() -> None:
     entries = parse_manifests(list(MOCK_MANIFESTS))
     assert len(entries) > 10
     names = {(e.ecosystem, e.name) for e in entries}
     assert ("pypi", "flask") in names
     assert ("npm", "lodash") in names
+
+
+def test_file_scanner_detects_lowercase_debug_flags() -> None:
+    matches = scan_file("config/app.toml", "toml", "debug = true\n")
+    assert any(match.rule == "debug_mode_exposed" for match in matches)
 
 
 def test_allowed_extensions() -> None:

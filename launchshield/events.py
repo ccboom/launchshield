@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 EVENT_TYPES = {
     "run.started",
+    "run.plan_updated",
     "stage.started",
     "tool.invoked",
     "payment.submitted",

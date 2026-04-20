@@ -17,6 +17,11 @@ class RunMode(str, Enum):
     CUSTOM_STANDARD = "custom-standard"
 
 
+class ScanScope(str, Enum):
+    SAMPLE = "sample"
+    FULL = "full"
+
+
 class RunStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -46,6 +51,12 @@ class FindingSource(str, Enum):
     DEEP_ANALYSIS = "deep_analysis"
     AISA_VERIFY = "aisa_verify"
     FIX_SUGGESTION = "fix_suggestion"
+
+
+class ProviderMode(str, Enum):
+    MOCK = "mock"
+    REAL = "real"
+    ERROR = "error"
 
 
 class PaymentReceipt(BaseModel):
@@ -97,6 +108,13 @@ class ProfitabilitySnapshot(BaseModel):
     )
 
 
+class ProviderSource(BaseModel):
+    requested_mode: ProviderMode = ProviderMode.MOCK
+    effective_mode: ProviderMode = ProviderMode.MOCK
+    provider: str
+    detail: Optional[str] = None
+
+
 class RunCounts(BaseModel):
     planned_invocations: int = 0
     completed_invocations: int = 0
@@ -110,6 +128,7 @@ class RunCounts(BaseModel):
 class ScanRun(BaseModel):
     run_id: str
     mode: RunMode
+    scan_scope: ScanScope = ScanScope.SAMPLE
     status: RunStatus = RunStatus.QUEUED
     repo_url: str
     target_url: str
@@ -117,10 +136,12 @@ class ScanRun(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     planned_invocations: int = 0
+    planned_breakdown: dict[str, int] = Field(default_factory=dict)
     completed_invocations: int = 0
     tool_invocations: List[ToolInvocation] = Field(default_factory=list)
     findings: List[Finding] = Field(default_factory=list)
     profitability: ProfitabilitySnapshot = Field(default_factory=ProfitabilitySnapshot)
+    provider_sources: dict[str, ProviderSource] = Field(default_factory=dict)
     error_message: Optional[str] = None
 
     def counts(self) -> RunCounts:
@@ -146,6 +167,7 @@ class ScanRun(BaseModel):
 
 class CreateRunRequest(BaseModel):
     mode: RunMode
+    scan_scope: ScanScope = ScanScope.SAMPLE
     repo_url: Optional[str] = None
     target_url: Optional[str] = None
 
@@ -154,6 +176,7 @@ class CreateRunResponse(BaseModel):
     run_id: str
     status: RunStatus
     mode: RunMode
+    scan_scope: ScanScope
     stream_url: str
     summary_url: str
 
@@ -162,11 +185,14 @@ class RunSummary(BaseModel):
     run_id: str
     status: RunStatus
     mode: RunMode
+    scan_scope: ScanScope
     repo_url: str
     target_url: str
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
     counts: RunCounts
+    planned_breakdown: dict[str, int]
+    provider_sources: dict[str, ProviderSource]
     totals: ProfitabilitySnapshot
     profitability: ProfitabilitySnapshot
     findings: List[Finding]
@@ -179,11 +205,14 @@ class RunSummary(BaseModel):
             run_id=run.run_id,
             status=run.status,
             mode=run.mode,
+            scan_scope=run.scan_scope,
             repo_url=run.repo_url,
             target_url=run.target_url,
             started_at=run.started_at,
             completed_at=run.completed_at,
             counts=run.counts(),
+            planned_breakdown=run.planned_breakdown,
+            provider_sources=run.provider_sources,
             totals=run.profitability,
             profitability=run.profitability,
             findings=run.findings,

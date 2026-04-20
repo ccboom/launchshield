@@ -9,6 +9,11 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import aisa as aisa_mod
+from . import llm as llm_mod
+from . import payments as payments_mod
+from . import repo_source as repo_source_mod
+from .browser_runtime import BrowserRuntime
 from .config import get_config
 from .models import (
     CreateRunRequest,
@@ -42,6 +47,12 @@ def create_app() -> FastAPI:
         context = {
             "preset_total": preset_tier.total(),
             "custom_total": custom_tier.total(),
+            "custom_analysis_total": (
+                custom_tier.site_probe
+                + custom_tier.deep_analysis
+                + custom_tier.aisa_verify
+                + custom_tier.fix_suggestion
+            ),
             "preset_repo_url": cfg.preset_repo_url,
             "preset_target_url": cfg.preset_target_url,
             "tool_prices": TOOL_PRICES_USD,
@@ -51,6 +62,11 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict:
         cfg = get_config()
+        browser = BrowserRuntime(cfg)
+        try:
+            browser_source = await browser.describe_provider()
+        finally:
+            await browser.aclose()
         return {
             "status": "ok",
             "app_env": cfg.app_env,
@@ -59,6 +75,13 @@ def create_app() -> FastAPI:
             "use_real_aisa": cfg.use_real_aisa,
             "use_real_github": cfg.use_real_github,
             "use_real_browser": cfg.use_real_browser,
+            "providers": {
+                "payments": payments_mod.describe_provider(cfg).model_dump(),
+                "github": repo_source_mod.describe_provider(cfg).model_dump(),
+                "llm": llm_mod.describe_provider(cfg).model_dump(),
+                "aisa": aisa_mod.describe_provider(cfg).model_dump(),
+                "browser": browser_source.model_dump(),
+            },
         }
 
     @app.post("/api/runs", response_model=CreateRunResponse)
@@ -72,6 +95,15 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="repo_url must be a public GitHub URL")
             if not (payload.target_url.startswith("http://") or payload.target_url.startswith("https://")):
                 raise HTTPException(status_code=400, detail="target_url must be http:// or https://")
+            try:
+                parse_github_url(payload.target_url)
+            except ValueError:
+                pass
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="target_url must be a target site, not a GitHub repository URL",
+                )
 
         orchestrator = get_orchestrator()
         run = orchestrator.build_run(payload)
@@ -81,6 +113,7 @@ def create_app() -> FastAPI:
             run_id=run.run_id,
             status=run.status,
             mode=run.mode,
+            scan_scope=run.scan_scope,
             stream_url=f"/api/runs/{run.run_id}/events",
             summary_url=f"/api/runs/{run.run_id}",
         )
