@@ -14,7 +14,7 @@ from .config import AppConfig
 from .models import ProviderMode, ProviderSource
 
 
-_HTTP_USER_AGENT = "LaunchShieldSwarm/0.1 (+https://launchshield.dev)"
+_HTTP_USER_AGENT = "LaunchShieldSwarm/0.1.2 (+https://launchshield.dev)"
 _SNAPSHOT_SCRIPT = r"""
 (() => {
   const inlineScripts = Array.from(document.scripts || [])

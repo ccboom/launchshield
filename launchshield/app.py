@@ -34,7 +34,7 @@ STATIC_DIR = BASE_DIR / "static"
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="LaunchShield Swarm", version="0.1.0")
+    app = FastAPI(title="LaunchShield Swarm", version="0.1.2")
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

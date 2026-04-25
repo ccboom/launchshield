@@ -281,12 +281,26 @@ class Orchestrator:
             )
 
             await self._stage_file_scan(run, selected_files, repo_provider, payment_provider)
+            if self._run_failed(run):
+                return
             await self._stage_dep_lookup(run, selected_deps, payment_provider)
+            if self._run_failed(run):
+                return
             await self._stage_site_probes(run, probe_plans, browser, payment_provider)
+            if self._run_failed(run):
+                return
             await self._stage_deep_analysis(run, tier.deep_analysis, llm_provider, payment_provider)
+            if self._run_failed(run):
+                return
             await self._stage_aisa_verify(run, tier.aisa_verify, aisa_provider, payment_provider)
+            if self._run_failed(run):
+                return
             await self._stage_fix_suggestions(run, tier.fix_suggestion, llm_provider, payment_provider)
+            if self._run_failed(run):
+                return
             await self._stage_profitability(run)
+            if self._run_failed(run):
+                return
             await self._stage_finalize(run)
 
         finally:
@@ -320,10 +334,14 @@ class Orchestrator:
         await self._stage_started(run.run_id, stage, quota=len(targets), scan_scope=run.scan_scope.value)
 
         for target_path in targets:
+            if self._run_failed(run):
+                return
             invocation = await self._begin_invocation(
                 run, stage=stage, tool_name="file_scan", target=target_path
             )
             await self._submit_payment(run, invocation, payment_provider, memo=f"file_scan:{target_path}")
+            if self._run_failed(run):
+                return
             if invocation.status == InvocationStatus.FAILED:
                 continue
 
@@ -366,12 +384,16 @@ class Orchestrator:
         await self._stage_started(run.run_id, stage, quota=len(targets), scan_scope=run.scan_scope.value)
 
         for dep in targets:
+            if self._run_failed(run):
+                return
             dep_label = (dep.specifier or dep.version) if dep else ""
             target = f"{dep.ecosystem}:{dep.name}@{dep_label}" if dep else "empty-manifest"
             invocation = await self._begin_invocation(
                 run, stage=stage, tool_name="dep_lookup", target=target
             )
             await self._submit_payment(run, invocation, payment_provider, memo=f"dep_lookup:{target}")
+            if self._run_failed(run):
+                return
             if invocation.status == InvocationStatus.FAILED:
                 continue
 
@@ -410,10 +432,14 @@ class Orchestrator:
         base_snapshot_error: Optional[str] = None
 
         for plan in plans:
+            if self._run_failed(run):
+                return
             invocation = await self._begin_invocation(
                 run, stage=stage, tool_name="site_probe", target=plan.target
             )
             await self._submit_payment(run, invocation, payment_provider, memo=f"site_probe:{plan.target}")
+            if self._run_failed(run):
+                return
             if invocation.status == InvocationStatus.FAILED:
                 continue
             if plan.probe != "path" and base_snapshot is None and base_snapshot_error is None:
@@ -484,12 +510,16 @@ class Orchestrator:
         ][:quota]
 
         for i in range(quota):
+            if self._run_failed(run):
+                return
             target_finding = high_candidates[i] if i < len(high_candidates) else None
             target = target_finding.finding_id if target_finding else f"synthetic-high-{i+1}"
             invocation = await self._begin_invocation(
                 run, stage=stage, tool_name="deep_analysis", target=target
             )
             await self._submit_payment(run, invocation, payment_provider, memo=f"deep_analysis:{target}")
+            if self._run_failed(run):
+                return
             if invocation.status == InvocationStatus.FAILED:
                 continue
 
@@ -547,12 +577,16 @@ class Orchestrator:
         ][:quota]
 
         for i in range(quota):
+            if self._run_failed(run):
+                return
             target_finding = candidates[i] if i < len(candidates) else None
             target = target_finding.finding_id if target_finding else f"synthetic-aisa-{i+1}"
             invocation = await self._begin_invocation(
                 run, stage=stage, tool_name="aisa_verify", target=target
             )
             await self._submit_payment(run, invocation, payment_provider, memo=f"aisa_verify:{target}")
+            if self._run_failed(run):
+                return
             if invocation.status == InvocationStatus.FAILED:
                 continue
 
@@ -605,12 +639,16 @@ class Orchestrator:
         ][:quota]
 
         for i in range(quota):
+            if self._run_failed(run):
+                return
             target_finding = candidates[i] if i < len(candidates) else None
             target = target_finding.finding_id if target_finding else f"synthetic-fix-{i+1}"
             invocation = await self._begin_invocation(
                 run, stage=stage, tool_name="fix_suggestion", target=target
             )
             await self._submit_payment(run, invocation, payment_provider, memo=f"fix_suggestion:{target}")
+            if self._run_failed(run):
+                return
             if invocation.status == InvocationStatus.FAILED:
                 continue
 
@@ -755,11 +793,9 @@ class Orchestrator:
                 amount_usd=invocation.price_usd, memo=memo
             )
         except Exception as exc:
+            reason = f"payment failed: {exc!r}"
+            await self._fail_invocation(run, invocation, reason)
             await self._fail_run(run, f"payment failed for {invocation.invocation_id}: {exc!r}")
-            invocation.status = InvocationStatus.FAILED
-            invocation.error_message = f"payment failed: {exc!r}"
-            invocation.completed_at = _utcnow()
-            self._registry.save(run)
             return
 
         invocation.payment = receipt
@@ -850,6 +886,9 @@ class Orchestrator:
         run.completed_at = _utcnow()
         self._registry.save(run)
         await self._bus.publish(make_event("run.failed", run.run_id, reason=reason))
+
+    def _run_failed(self, run: ScanRun) -> bool:
+        return run.status == RunStatus.FAILED
 
     async def _retry_once(self, operation: Callable[[], Awaitable[_T]]) -> _T:
         last_error: Optional[Exception] = None

@@ -187,3 +187,53 @@ def test_openai_provider_falls_back_to_stream_when_content_missing(monkeypatch) 
     assert result.exploit_path == "Stream exploit"
     assert result.impact_scope == "Stream impact"
     assert result.remediation_direction == "Stream remediation"
+
+
+def test_openai_provider_coerces_list_validation_steps_to_string(monkeypatch) -> None:
+    class _FakeCompletions:
+        async def create(self, **kwargs):
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(
+                            content=(
+                                '{"why":"because","patch_summary":"patch summary",'
+                                '"suggested_code_change":"patch code",'
+                                '"validation_steps":["step one","step two"]}'
+                            )
+                        )
+                    )
+                ]
+            )
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = _FakeChat()
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/")
+
+    provider = OpenAIProvider(AppConfig())
+
+    async def _run():
+        return await provider.fix_suggestion(
+            llm_mod.FixSuggestionInput(
+                snippet="eval(user_input)",
+                rule="dangerous_eval",
+                language="python",
+                analysis=llm_mod.DeepAnalysisResult(
+                    risk_summary="risk",
+                    exploit_path="exploit",
+                    impact_scope="impact",
+                    remediation_direction="remediation",
+                ),
+            )
+        )
+
+    result = asyncio.run(_run())
+
+    assert result.validation_steps == "step one\nstep two"

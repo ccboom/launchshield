@@ -266,10 +266,10 @@ class OpenAIProvider:
         )
         data = await self._chat(system, user)
         return DeepAnalysisResult(
-            risk_summary=data.get("risk_summary", ""),
-            exploit_path=data.get("exploit_path", ""),
-            impact_scope=data.get("impact_scope", ""),
-            remediation_direction=data.get("remediation_direction", ""),
+            risk_summary=_coerce_text_field(data.get("risk_summary", "")),
+            exploit_path=_coerce_text_field(data.get("exploit_path", "")),
+            impact_scope=_coerce_text_field(data.get("impact_scope", "")),
+            remediation_direction=_coerce_text_field(data.get("remediation_direction", "")),
         )
 
     async def fix_suggestion(self, req: FixSuggestionInput) -> FixSuggestionResult:
@@ -287,10 +287,10 @@ class OpenAIProvider:
         )
         data = await self._chat(system, user)
         return FixSuggestionResult(
-            why=data.get("why", ""),
-            patch_summary=data.get("patch_summary", ""),
-            suggested_code_change=data.get("suggested_code_change", ""),
-            validation_steps=data.get("validation_steps", ""),
+            why=_coerce_text_field(data.get("why", "")),
+            patch_summary=_coerce_text_field(data.get("patch_summary", "")),
+            suggested_code_change=_coerce_text_field(data.get("suggested_code_change", "")),
+            validation_steps=_coerce_text_field(data.get("validation_steps", "")),
         )
 
 
@@ -357,6 +357,19 @@ def _normalize_openai_base_url(base_url: Optional[str]) -> Optional[str]:
         path = "/v1"
     normalized = parsed._replace(path=path, query="", fragment="")
     return urlunsplit(normalized)
+
+
+def _coerce_text_field(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        parts = [_coerce_text_field(item).strip() for item in value]
+        return "\n".join(part for part in parts if part)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
 
 
 def _extract_chat_completion_text(resp: Any) -> str:

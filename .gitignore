@@ -17,6 +17,13 @@ dist/
 data/
 !tests/**/data/
 
+# Generated hackathon build/cache artefacts
+docs/hackathon/.pptx-build/
+docs/hackathon/captures/*-template-unpacked/
+docs/hackathon/captures/*.html
+docs/hackathon/captures/*.mhtml
+docs/hackathon/captures/*.json
+
 # Secrets
 .env
 .env.*

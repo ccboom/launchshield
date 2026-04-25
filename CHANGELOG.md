@@ -212,3 +212,100 @@
 - 遗留问题：
   - 真实环境 smoke test 这轮按用户要求暂缓，尚未产出新的现场证据。
   - 如果本机没有开启 `CHROME_DEBUG_URL` 对应的浏览器端口，`USE_REAL_BROWSER=true` 会显示为 HTTP fallback。
+
+## 2026-04-25
+
+### 修复真实支付失败后仍继续排队后续扫描
+
+- 背景：真实支付模式下，Arc 返回 `insufficient funds for gas * price + value` 后，run 已经进入 `failed`，前端仍继续出现后续 `file_scan / dep_lookup / site_probe` 失败行，视觉上像“最后又 failed 了一次”。
+- 修改内容：
+  - 调整 `launchshield/orchestrator.py`，支付异常时先把当前 invocation 落为 `tool.failed`，再把 run 置为 `failed`。
+  - 为各 stage 增加失败态短路；run 进入 `failed` 后，当前 stage 立即停止，后续 stage 不再继续排队。
+  - 修复支付失败路径下 `completed_invocations` 和 `tool.failed` 事件不一致的问题。
+- 影响文件：
+  - `launchshield/orchestrator.py`
+- 验证方式：
+  - 对照 `data/runs/run_20260425_4xm05m.json` 和前端状态流，确认根因来自真实 Arc 支付失败。
+  - 代码检查确认支付失败后不再继续进入后续 stage 循环。
+- 遗留问题：
+  - 当前钱包余额不足时，UI 仍然只显示通用 `failed` 状态，后续适合补一条更直接的“余额不足 / 需要 faucet”提示。
+
+### 修复真实 LLM 返回数组字段导致 orchestrator 崩溃
+
+- 背景：最新真实运行在 `analysis.fix_suggestions` 阶段失败，`run_20260425_cla5hd.json` 显示 `Finding.recommendation` 收到的是 list，触发 Pydantic 校验错误，整次 run 被标记为 `orchestrator crashed`。
+- 修改内容：
+  - 为 `launchshield/llm.py` 新增 LLM 文本字段归一化逻辑。
+  - 当 OpenAI 兼容网关返回 list / tuple / dict 类型字段时，统一收敛成字符串后再组装 `DeepAnalysisResult` 和 `FixSuggestionResult`。
+  - 新增回归测试，覆盖 `validation_steps` 返回数组时的兼容处理。
+- 影响文件：
+  - `launchshield/llm.py`
+  - `tests/test_llm_provider.py`
+- 验证方式：
+  - `pytest tests/test_llm_provider.py -k coerces_list_validation_steps_to_string`
+- 遗留问题：
+  - 当前仍未对真实上游返回体做更严格 schema 校验，后续适合补一层字段级结构告警。
+
+### 将中文视频脚本改为中英对照版
+
+- 背景：用户需要把 `docs/hackathon/video-script.zh-CN.md` 里的中文话术翻译成英文，并按中英对照形式写回文件，方便直接用于录制和提交材料。
+- 修改内容：
+  - 重写 `docs/hackathon/video-script.zh-CN.md`，保留原有章节结构。
+  - 为定位、录制建议、分镜脚本、精简口播、X 发帖文案和录制重点补齐英文翻译。
+  - 把整份文档整理成中英对照版，便于直接照读、配字幕和做国际化提交。
+- 影响文件：
+  - `docs/hackathon/video-script.zh-CN.md`
+- 验证方式：
+  - 手工检查章节结构、时间轴和文案段落是否完整保留。
+  - 手工检查每一段中文后都附有对应英文译文。
+- 遗留问题：
+  - 当前文案是偏演示和评审语境的英文版本，后续如需更口语化配音稿，还可以再收一轮语气。
+
+### 新增详细英文版 Slide Presentation 文案稿
+
+- 背景：用户需要一份更详细的英文版 Slide Presentation，用于 LabLab 提交页中的 `Slide Presentation` 材料。
+- 修改内容：
+  - 新增 `docs/hackathon/slide-presentation.en.md`。
+  - 按逐页方式写出详细 deck 文案，覆盖标题、核心信息、页内文案、视觉建议和 speaker notes。
+  - 内容对齐现有项目定位、`ppt-outline.md`、LabLab Step 1 材料和截图命名约定，方便直接转成 PPT 或 PDF。
+- 影响文件：
+  - `docs/hackathon/slide-presentation.en.md`
+- 验证方式：
+  - 手工检查页数、结构、叙事顺序和项目事实是否与现有材料一致。
+  - 手工检查每一页都具备可直接转制为 PPT 的英文文案。
+- 遗留问题：
+  - 当前是文案稿，不是最终 `.pptx` 或设计成品；后续可继续产出正式 PPT/PDF。
+
+### 生成可提交的英文版 Slide Presentation `.pptx`
+
+- 背景：现有 `docs/hackathon/slide-presentation.en.md` 已经具备完整英文文案，需要进一步落成可直接提交的真实演示文件。
+- 修改内容：
+  - 新增 `scripts/generate_hackathon_pptx.py`，基于本机 Office 宽屏模板生成 `16:9` 的英文版 deck。
+  - 输出 `docs/hackathon/LaunchShield-Swarm-Slide-Presentation.pptx`，包含 `12` 页内容页与收尾页。
+  - 统一把模板产物从 `.potx` 主文档类型转换为标准 `.pptx`，并重写 slide、presentation 关系、文档元数据和标题清单。
+  - 由于当前环境缺少稳定的本地 PDF 转换链路，这一轮先交付 `.pptx` 成品。
+- 影响文件：
+  - `scripts/generate_hackathon_pptx.py`
+  - `docs/hackathon/LaunchShield-Swarm-Slide-Presentation.pptx`
+  - `CHANGELOG.md`
+- 验证方式：
+  - 运行 `python scripts/generate_hackathon_pptx.py`
+  - 检查产物 zip 结构，确认 `slide_count=12`
+  - 检查 `[Content_Types].xml` 已切换到 `presentation.main+xml`
+  - 抽查 `slide1.xml`、`slide6.xml`、`slide12.xml` 关键文案存在
+- 遗留问题：
+  - 当前 deck 使用程序化绘制的文本与占位视觉块，未嵌入真实产品截图。
+  - 本轮未导出 `.pdf`，后续可在本机 PowerPoint 或 LibreOffice 环境补导出。
+
+### 导出英文版 Slide Presentation `.pdf`
+
+- 背景：在真实 `.pptx` 成品已经生成后，需要补一个可直接上传的 `.pdf` 版本。
+- 修改内容：
+  - 使用本机 PowerPoint 把 `docs/hackathon/LaunchShield-Swarm-Slide-Presentation.pptx` 导出为 `docs/hackathon/LaunchShield-Swarm-Slide-Presentation.pdf`。
+- 影响文件：
+  - `docs/hackathon/LaunchShield-Swarm-Slide-Presentation.pdf`
+  - `CHANGELOG.md`
+- 验证方式：
+  - 检查 PDF 文件已生成并成功落盘
+  - 抽查 PDF 包内页对象数量，确认页数为 `12`
+- 遗留问题：
+  - 当前 PDF 内容与 `.pptx` 保持一致，视觉素材仍以程序化卡片和占位块为主，未嵌入真实产品截图。
