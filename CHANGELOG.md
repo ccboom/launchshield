@@ -309,3 +309,21 @@
   - 抽查 PDF 包内页对象数量，确认页数为 `12`
 - 遗留问题：
   - 当前 PDF 内容与 `.pptx` 保持一致，视觉素材仍以程序化卡片和占位块为主，未嵌入真实产品截图。
+
+### 增加 Vercel FastAPI 部署入口
+
+- 背景：Vercel FastAPI Preset 扫描固定入口文件，无法识别项目中的 `launchshield/app.py`，部署时报 `No fastapi entrypoint found`。
+- 修改内容：
+  - 新增 `api/index.py`，把 `launchshield.app:app` 暴露为 Vercel 可识别入口。
+  - 新增 `vercel.json`，把所有路径路由到 `api/index.py`，并为 Vercel Serverless 设置 mock 模式环境变量。
+  - 更新 `DEPLOY.md`，补充 Vercel 选择 `FastAPI` Preset、安装命令、健康检查和推荐环境变量。
+- 影响文件：
+  - `api/index.py`
+  - `vercel.json`
+  - `DEPLOY.md`
+  - `CHANGELOG.md`
+- 验证方式：
+  - `python -m py_compile api/index.py launchshield/app.py`
+  - `python -c "from api.index import app; print(app.title, app.version)"`
+- 遗留问题：
+  - Vercel 适合提交页演示；长时间 SSE、后台任务和本地运行记录仍更适合 Fly.io 或 Render。

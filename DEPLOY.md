@@ -1,6 +1,6 @@
 # Deployment Guide — LaunchShield Swarm
 
-Three supported paths, in order of simplicity.
+Four supported paths, in order of simplicity.
 
 ## 1. Local Docker (sanity check)
 
@@ -53,7 +53,36 @@ flyctl tokens create deploy --name github-actions-ci > fly_token.txt
 # as FLY_API_TOKEN. Delete the local file afterwards.
 ```
 
-## 3. Render (one-click alternative)
+## 3. Vercel (Serverless FastAPI)
+
+Vercel can run the demo through the FastAPI preset. The repo includes `api/index.py`
+as the entrypoint and `vercel.json` to route every path to the FastAPI app.
+
+Use these settings in the Vercel import flow:
+
+- `Application Preset`: `FastAPI`
+- `Root Directory`: repo root
+- `Install Command`: `pip install -r requirements.txt`
+- `Health Check`: open `/api/health` after deploy
+
+Keep these env vars in mock mode for a reliable Vercel demo:
+
+```text
+APP_ENV=production
+LAUNCHSHIELD_DATA_DIR=/tmp/launchshield-data
+LAUNCHSHIELD_DEMO_PACE_SECONDS=0.02
+USE_REAL_PAYMENTS=false
+USE_REAL_LLM=false
+USE_REAL_AISA=false
+USE_REAL_GITHUB=false
+USE_REAL_BROWSER=false
+```
+
+Vercel is convenient for the submission page, but Fly.io or Render are better for
+longer demos because this app uses SSE streaming, background tasks and local run
+artifacts.
+
+## 4. Render (one-click alternative)
 
 `render.yaml` defines a Blueprint that Render picks up automatically.
 

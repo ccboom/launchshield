@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.py"
+    }
+  ],
+  "env": {
+    "APP_ENV": "production",
+    "LAUNCHSHIELD_DATA_DIR": "/tmp/launchshield-data",
+    "LAUNCHSHIELD_DEMO_PACE_SECONDS": "0.02",
+    "USE_REAL_PAYMENTS": "false",
+    "USE_REAL_LLM": "false",
+    "USE_REAL_AISA": "false",
+    "USE_REAL_GITHUB": "false",
+    "USE_REAL_BROWSER": "false"
+  }
+}
